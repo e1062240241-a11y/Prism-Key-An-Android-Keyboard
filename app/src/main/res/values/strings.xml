@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">PrismKeys</string>
+    <string name="ime_service_label">PrismKeys Offline Keyboard</string>
+    <string name="ime_subtype_en_us">English (US)</string>
+    <string name="ime_subtype_en_gb">English (UK)</string>
+    <string name="ime_subtype_es">Spanish</string>
+    <string name="ime_subtype_fr">French</string>
+    <string name="ime_subtype_de">German</string>
+</resources>

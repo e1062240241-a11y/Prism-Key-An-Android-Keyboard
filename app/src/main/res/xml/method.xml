@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:icon="@mipmap/ic_launcher"
+    android:settingsActivity="com.example.MainActivity"
+    android:supportsSwitchingToNextInputMethod="true">
+    <subtype
+        android:icon="@mipmap/ic_launcher"
+        android:imeSubtypeExtraValue="TrySupportingEmoji"
+        android:imeSubtypeLocale="en_US"
+        android:imeSubtypeMode="keyboard"
+        android:isAsciiCapable="true"
+        android:label="@string/ime_subtype_en_us" />
+    <subtype
+        android:icon="@mipmap/ic_launcher"
+        android:imeSubtypeLocale="en_GB"
+        android:imeSubtypeMode="keyboard"
+        android:isAsciiCapable="true"
+        android:label="@string/ime_subtype_en_gb" />
+    <subtype
+        android:icon="@mipmap/ic_launcher"
+        android:imeSubtypeLocale="es_ES"
+        android:imeSubtypeMode="keyboard"
+        android:isAsciiCapable="true"
+        android:label="@string/ime_subtype_es" />
+    <subtype
+        android:icon="@mipmap/ic_launcher"
+        android:imeSubtypeLocale="fr_FR"
+        android:imeSubtypeMode="keyboard"
+        android:isAsciiCapable="true"
+        android:label="@string/ime_subtype_fr" />
+    <subtype
+        android:icon="@mipmap/ic_launcher"
+        android:imeSubtypeLocale="de_DE"
+        android:imeSubtypeMode="keyboard"
+        android:isAsciiCapable="true"
+        android:label="@string/ime_subtype_de" />
+</input-method>

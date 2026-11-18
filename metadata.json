@@ -1,0 +1,6 @@
+{
+  "name": "PrismKeys",
+  "description": "Fast, private offline keyboard with built-in translation across 59 languages, saved clipboard notes, voice typing, swipe typing, helpful word suggestions, custom stickers, and Material color themes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
