@@ -122,6 +122,7 @@ class KeyboardController(
     val voiceState: StateFlow<VoiceTypingState> = voiceEngine.state
 
     private var lastCommittedWord: String? = null
+    private var lastAutocorrectUndo: Pair<String, String>? = null // rawTyped -> committedWithSpace
     private var translateJob: Job? = null
 
     fun setPanelMode(mode: KeyboardPanelMode) {
@@ -170,6 +171,7 @@ class KeyboardController(
 
         val isWordChar = ch.length == 1 && (ch[0].isLetter() || ch == "'")
         if (isWordChar) {
+            lastAutocorrectUndo = null
             val updated = state.composingWord + ch
             target.setComposingText(updated)
             val suggestionRes = suggestionEngine.suggestForComposing(
@@ -188,6 +190,7 @@ class KeyboardController(
                 )
             }
         } else {
+            lastAutocorrectUndo = null
             commitPendingWordIfAny()
             target.commitText(ch)
             if (ch in listOf(".", "!", "?") && settings.value.autoCapitalize) {
@@ -204,14 +207,22 @@ class KeyboardController(
         }
 
         if (state.composingWord.isNotEmpty()) {
-            val chosen = if (settings.value.autocorrectEnabled && state.autocorrectCandidate != null) {
-                state.autocorrectCandidate
-            } else {
-                state.composingWord
-            }
-            target.commitText("$chosen ")
+            val prevWord = lastCommittedWord
+            val rawTyped = state.composingWord
+            val wasAutocorrected = settings.value.autocorrectEnabled &&
+                state.autocorrectCandidate != null &&
+                !state.autocorrectCandidate.equals(rawTyped, ignoreCase = false)
+            val chosen = if (wasAutocorrected) state.autocorrectCandidate!! else rawTyped
+
+            val committedText = "$chosen "
+            target.commitText(committedText)
             lastCommittedWord = chosen
-            suggestionEngine.learnWordAsync(chosen)
+            lastAutocorrectUndo = if (wasAutocorrected) rawTyped to committedText else null
+            suggestionEngine.learnWordAsync(
+                word = chosen,
+                previousWord = prevWord,
+                rawTyped = if (wasAutocorrected) rawTyped else null,
+            )
             val nextSuggestions = suggestionEngine.suggestNextWords(chosen)
             _uiState.update {
                 it.copy(
@@ -222,6 +233,7 @@ class KeyboardController(
                 )
             }
         } else {
+            lastAutocorrectUndo = null
             target.commitText(" ")
             val before = target.getTextBeforeCursor(40)
             if (before.endsWith(". ") || before.endsWith("! ") || before.endsWith("? ")) {
@@ -242,6 +254,7 @@ class KeyboardController(
         }
 
         if (state.composingWord.isNotEmpty()) {
+            lastAutocorrectUndo = null
             val updated = state.composingWord.dropLast(1)
             if (updated.isEmpty()) {
                 target.setComposingText("")
@@ -269,6 +282,34 @@ class KeyboardController(
                 }
             }
         } else {
+            val undoPair = lastAutocorrectUndo
+            if (undoPair != null) {
+                val (rawTyped, committedWithSpace) = undoPair
+                val before = target.getTextBeforeCursor(committedWithSpace.length + 2)
+                if (before.endsWith(committedWithSpace)) {
+                    lastAutocorrectUndo = null
+                    target.deleteBeforeCursor(committedWithSpace.length)
+                    target.setComposingText(rawTyped)
+                    suggestionEngine.recordUndoAutocorrectAsync(
+                        correctedWord = committedWithSpace.trimEnd(),
+                        originalTyped = rawTyped,
+                    )
+                    val res = suggestionEngine.suggestForComposing(
+                        composing = rawTyped,
+                        previousWord = lastCommittedWord,
+                        autocorrectEnabled = false,
+                    )
+                    _uiState.update {
+                        it.copy(
+                            composingWord = rawTyped,
+                            suggestions = (listOf(rawTyped) + res.suggestions).distinct().take(3),
+                            autocorrectCandidate = null,
+                        )
+                    }
+                    return
+                }
+            }
+            lastAutocorrectUndo = null
             target.deleteBeforeCursor(1)
         }
     }
@@ -319,6 +360,9 @@ class KeyboardController(
 
     fun onSuggestionTapped(word: String) {
         val state = _uiState.value
+        val prevWord = lastCommittedWord
+        val rawTyped = state.composingWord.takeIf { it.isNotEmpty() }
+        lastAutocorrectUndo = null
         val formatted = if (state.shiftState != ShiftState.OFF && word.isNotEmpty()) {
             word.replaceFirstChar { it.uppercase() }
         } else {
@@ -326,7 +370,11 @@ class KeyboardController(
         }
         target.commitText("$formatted ")
         lastCommittedWord = formatted
-        suggestionEngine.learnWordAsync(formatted)
+        suggestionEngine.learnWordAsync(
+            word = formatted,
+            previousWord = prevWord,
+            rawTyped = rawTyped,
+        )
         val next = suggestionEngine.suggestNextWords(formatted)
         _uiState.update {
             it.copy(
@@ -371,11 +419,13 @@ class KeyboardController(
                 _uiState.update { it.copy(gesturePreviewWord = null) }
             } else {
                 commitPendingWordIfAny()
+                val prevWord = lastCommittedWord
+                lastAutocorrectUndo = null
                 val prefix = target.getTextBeforeCursor(2)
                 val leadingSpace = if (prefix.isNotEmpty() && !prefix.last().isWhitespace()) " " else ""
                 target.commitText("$leadingSpace$formatted ")
                 lastCommittedWord = formatted
-                suggestionEngine.learnWordAsync(formatted)
+                suggestionEngine.learnWordAsync(word = formatted, previousWord = prevWord)
                 _uiState.update {
                     it.copy(
                         composingWord = "",
@@ -524,9 +574,11 @@ class KeyboardController(
     private fun commitWordOrPhraseFromVoice(spokenText: String) {
         commitPendingWordIfAny()
         target.commitText(spokenText)
-        spokenText.trim().split(' ').lastOrNull()?.let { lastWord ->
-            lastCommittedWord = lastWord
-            suggestionEngine.learnWordAsync(lastWord)
+        val words = spokenText.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+        words.forEach { w ->
+            val prev = lastCommittedWord
+            lastCommittedWord = w
+            suggestionEngine.learnWordAsync(word = w, previousWord = prev)
         }
     }
 
@@ -589,6 +641,8 @@ class KeyboardController(
     }
 
     fun resetComposingForNewField() {
+        lastAutocorrectUndo = null
+        lastCommittedWord = null
         _uiState.update {
             it.copy(
                 composingWord = "",
@@ -606,9 +660,10 @@ class KeyboardController(
     private fun commitPendingWordIfAny() {
         val word = _uiState.value.composingWord
         if (word.isNotEmpty()) {
+            val prevWord = lastCommittedWord
             target.finishComposingText()
             lastCommittedWord = word
-            suggestionEngine.learnWordAsync(word)
+            suggestionEngine.learnWordAsync(word = word, previousWord = prevWord)
             _uiState.update {
                 it.copy(
                     composingWord = "",

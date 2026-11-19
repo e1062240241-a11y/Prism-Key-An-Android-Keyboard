@@ -53,3 +53,26 @@ data class LearnedWordEntity(
     val lastUsed: Long = System.currentTimeMillis(),
     val isUserAdded: Boolean = true,
 )
+
+@Entity(
+    tableName = "word_transitions",
+    primaryKeys = ["prevWord", "nextWord"],
+)
+data class WordTransitionEntity(
+    val prevWord: String,
+    val nextWord: String,
+    val frequency: Int = 1,
+    val lastUsed: Long = System.currentTimeMillis(),
+)
+
+@Entity(
+    tableName = "typo_patterns",
+    primaryKeys = ["typedInput", "targetWord"],
+)
+data class TypoPatternEntity(
+    val typedInput: String,
+    val targetWord: String,
+    val frequency: Int = 1,
+    val lastUsed: Long = System.currentTimeMillis(),
+)
+

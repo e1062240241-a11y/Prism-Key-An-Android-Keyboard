@@ -324,10 +324,17 @@ fun SettingsScreen(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 Icon(Icons.Filled.Lock, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                                Text(
-                                    text = "Your Custom Words (${learnedWords.size})",
-                                    style = MaterialTheme.typography.titleMedium,
-                                )
+                                Column {
+                                    Text(
+                                        text = "Your Custom Words (${learnedWords.size})",
+                                        style = MaterialTheme.typography.titleMedium,
+                                    )
+                                    Text(
+                                        text = "Learns words and phrases you type privately on your phone",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                             if (learnedWords.isNotEmpty()) {
                                 OutlinedButton(

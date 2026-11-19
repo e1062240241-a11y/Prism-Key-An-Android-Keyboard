@@ -53,6 +53,47 @@ class PrismKeysEngineUnitTest {
 
         val typo = engine.suggestForComposing("helo", autocorrectEnabled = true)
         assertTrue(typo.suggestions.contains("hello") || typo.autocorrectCandidate == "hello")
+
+        // Damerau transposition: hte -> the
+        val transposition = engine.suggestForComposing("hte", autocorrectEnabled = true)
+        assertEquals("the", transposition.autocorrectCandidate)
+    }
+
+    @Test
+    fun wordTrie_learnsUserWordsTransitionsAndTypoPatternsOffline() {
+        val engine = SuggestionEngine(SuggestionRepository(fakeDao))
+
+        // 1. Learn custom user word & verify prefix completion + no unwanted autocorrect
+        engine.learnWord("kiran", userAdded = true)
+        val nameSuggest = engine.suggestForComposing("kir", autocorrectEnabled = true)
+        assertTrue("Expected learned name 'kiran' in ${nameSuggest.suggestions}", nameSuggest.suggestions.contains("kiran"))
+        val exactLearned = engine.suggestForComposing("kiran", autocorrectEnabled = true)
+        assertEquals(null, exactLearned.autocorrectCandidate)
+
+        // 2. Learn user bigram typing pattern ("meet" -> "kiran")
+        repeat(3) {
+            engine.learnWord("kiran", previousWord = "meet")
+        }
+        val nextWords = engine.suggestNextWords("meet")
+        assertTrue("Expected 'kiran' predicted after 'meet', got $nextWords", nextWords.firstOrNull() == "kiran")
+
+        // Context-aware prefix completion after "meet"
+        val contextPrefix = engine.suggestForComposing("ki", previousWord = "meet")
+        assertEquals("kiran", contextPrefix.suggestions.firstOrNull())
+
+        // 3. Learn user personal typo pattern ("krn" -> "kiran")
+        repeat(2) {
+            engine.learnWord("kiran", rawTyped = "krn")
+        }
+        val learnedTypo = engine.suggestForComposing("krn", autocorrectEnabled = true)
+        assertEquals("kiran", learnedTypo.autocorrectCandidate)
+
+        // 4. Clearing learned patterns removes user words/transitions while keeping core dictionary
+        engine.clearLearnedPatterns()
+        assertEquals(null, engine.suggestForComposing("hte").autocorrectCandidate?.let { if (it == "the") null else it })
+        assertTrue(engine.suggestForComposing("hel").suggestions.any { it.startsWith("hel") })
+        assertTrue(engine.learnedTransitionCount() == 0)
+        assertTrue(engine.learnedTypoPatternCount() == 0)
     }
 
     @Test

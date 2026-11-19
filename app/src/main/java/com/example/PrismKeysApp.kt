@@ -40,7 +40,11 @@ class PrismKeysApp : Application() {
         preferencesRepository = KeyboardPreferencesRepository(this)
         clipboardRepository = ClipboardRepository(this, database.clipboardDao())
         stickerRepository = StickerRepository(this, database.stickerDao())
-        suggestionRepository = SuggestionRepository(database.learnedWordDao())
+        suggestionRepository = SuggestionRepository(
+            learnedWordDao = database.learnedWordDao(),
+            wordTransitionDao = database.wordTransitionDao(),
+            typoPatternDao = database.typoPatternDao(),
+        )
         suggestionEngine = SuggestionEngine(suggestionRepository)
         gestureDecoder = GestureDecoder(suggestionEngine)
         translationEngine = OfflineTranslationEngine(this)

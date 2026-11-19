@@ -5,45 +5,114 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import java.util.concurrent.ConcurrentHashMap
-import kotlin.math.abs
-import kotlin.math.min
 
 class SuggestionEngine(
     private val suggestionRepository: SuggestionRepository,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val learnedFrequencies = ConcurrentHashMap<String, Int>()
-
-    // Base frequency dictionary (ordered roughly by rank)
-    private val baseRankMap: Map<String, Int> by lazy {
-        CORE_WORDS.mapIndexed { idx, w -> w to (CORE_WORDS.size - idx) }.toMap()
+    private val wordTrie = WordTrie().apply {
+        insertBaseWords(CORE_WORDS)
     }
 
     val allDictionaryWords: List<String>
-        get() = (CORE_WORDS + learnedFrequencies.keys).distinct()
+        get() = wordTrie.allWords()
 
     suspend fun refreshLearnedWords() {
-        val snapshot = suggestionRepository.getSnapshot()
-        learnedFrequencies.clear()
-        snapshot.forEach { learnedFrequencies[it.word] = it.frequency * 25 }
+        val learnedSnapshot = suggestionRepository.getSnapshot()
+        val transitionSnapshot = suggestionRepository.getTransitionsSnapshot()
+        val typoSnapshot = suggestionRepository.getTypoPatternsSnapshot()
+
+        wordTrie.setLearnedWords(
+            learnedSnapshot.map { Triple(it.word, it.frequency, it.lastUsed to it.isUserAdded) },
+        )
+        wordTrie.setLearnedTransitions(
+            transitionSnapshot.map { Triple(it.prevWord, it.nextWord, it.frequency) },
+        )
+        wordTrie.setTypoPatterns(
+            typoSnapshot.map { Triple(it.typedInput, it.targetWord, it.frequency) },
+        )
     }
 
-    fun learnWordAsync(word: String) {
+    fun learnWord(
+        word: String,
+        previousWord: String? = null,
+        rawTyped: String? = null,
+        userAdded: Boolean = false,
+    ) {
+        wordTrie.learnWord(
+            word = word,
+            previousWord = previousWord,
+            rawTyped = rawTyped,
+            userAdded = userAdded,
+        )
+    }
+
+    fun learnWordAsync(
+        word: String,
+        previousWord: String? = null,
+        rawTyped: String? = null,
+        userAdded: Boolean = false,
+    ) {
         val clean = word.trim().lowercase()
         if (clean.length < 2 || !clean.all { it.isLetter() || it == '\'' }) return
-        learnedFrequencies[clean] = (learnedFrequencies[clean] ?: 0) + 25
+
+        wordTrie.learnWord(
+            word = clean,
+            previousWord = previousWord,
+            rawTyped = rawTyped,
+            userAdded = userAdded,
+        )
+
         scope.launch {
-            suggestionRepository.learnWord(clean, userAdded = false)
+            suggestionRepository.learnWord(clean, userAdded = userAdded)
+            if (!previousWord.isNullOrBlank()) {
+                suggestionRepository.recordTransition(previousWord, clean)
+            }
+            if (!rawTyped.isNullOrBlank()) {
+                val cleanTyped = rawTyped.trim().lowercase()
+                if (cleanTyped != clean && cleanTyped.length >= 2) {
+                    suggestionRepository.recordTypoPattern(cleanTyped, clean)
+                }
+            }
         }
+    }
+
+    fun recordUndoAutocorrectAsync(
+        correctedWord: String,
+        originalTyped: String,
+        previousWord: String? = null,
+    ) {
+        val cleanOrig = originalTyped.trim().lowercase()
+        if (cleanOrig.length < 2 || !cleanOrig.all { it.isLetter() || it == '\'' }) return
+
+        // Promote the user's original word in the Trie so it isn't overridden again
+        wordTrie.learnWord(
+            word = cleanOrig,
+            previousWord = previousWord,
+            userAdded = true,
+        )
+        scope.launch {
+            suggestionRepository.learnWord(cleanOrig, userAdded = true)
+            if (!previousWord.isNullOrBlank()) {
+                suggestionRepository.recordTransition(previousWord, cleanOrig)
+            }
+        }
+    }
+
+    fun removeLearnedWord(word: String) {
+        wordTrie.removeLearnedWord(word)
+    }
+
+    fun clearLearnedPatterns() {
+        wordTrie.clearAllLearnedPatterns()
     }
 
     fun suggestNextWords(previousWord: String?): List<String> {
-        val prev = previousWord?.trim()?.lowercase()?.trimEnd('.', ',', '!', '?')
-        if (!prev.isNullOrEmpty()) {
-            BIGRAM_NEXT[prev]?.let { return it.take(3) }
-        }
-        return listOf("I", "The", "Thanks")
+        return wordTrie.suggestNextWords(
+            previousWord = previousWord,
+            fallbackBigrams = BIGRAM_NEXT,
+            limit = 3,
+        )
     }
 
     fun suggestForComposing(
@@ -60,29 +129,29 @@ class SuggestionEngine(
         val isCapitalized = composing.firstOrNull()?.isUpperCase() == true
         val isAllCaps = composing.length > 1 && composing.all { !it.isLetter() || it.isUpperCase() }
 
-        val prefixMatches = allDictionaryWords
-            .asSequence()
-            .filter { it.startsWith(lower) }
-            .sortedByDescending { scoreWord(it, exact = it == lower) }
-            .take(6)
-            .toList()
+        val prefixMatches = wordTrie.suggestPrefix(
+            prefix = lower,
+            previousWord = previousWord,
+            limit = 6,
+        )
 
-        val fuzzyMatches = if (prefixMatches.size < 3 && lower.length >= 2) {
-            allDictionaryWords
-                .asSequence()
-                .filter { abs(it.length - lower.length) <= 2 && !it.startsWith(lower) }
-                .map { word -> word to keyboardEditDistance(lower, word) }
-                .filter { (_, dist) -> dist <= 2.2f }
-                .sortedBy { (word, dist) -> dist - (scoreWord(word, false) / 10000f) }
-                .map { it.first }
-                .take(4)
-                .toList()
+        val isExactKnown = wordTrie.containsActiveWord(lower)
+
+        val fuzzyMatches = if ((!isExactKnown || prefixMatches.size < 3) && lower.length >= 2) {
+            val maxCost = if (lower.length <= 3) 1.65f else 2.2f
+            wordTrie.suggestFuzzy(
+                input = lower,
+                previousWord = previousWord,
+                maxCost = maxCost,
+                limit = 4,
+                areAdjacentKeys = ::areAdjacentKeys,
+            ).map { it.word }
         } else {
             emptyList()
         }
 
         val combined = buildList {
-            if (lower in baseRankMap || learnedFrequencies.containsKey(lower)) {
+            if (isExactKnown) {
                 add(lower)
             }
             prefixMatches.forEach { if (it !in this) add(it) }
@@ -90,13 +159,9 @@ class SuggestionEngine(
             if (isEmpty()) add(composing)
         }.take(3).map { applyCasing(it, isCapitalized, isAllCaps) }
 
-        val autocorrect = if (
-            autocorrectEnabled &&
-            lower !in baseRankMap &&
-            !learnedFrequencies.containsKey(lower) &&
-            lower.length >= 2
-        ) {
-            val bestFuzzy = fuzzyMatches.firstOrNull() ?: prefixMatches.firstOrNull { it.length == lower.length }
+        val autocorrect = if (autocorrectEnabled && !isExactKnown && lower.length >= 2) {
+            val bestFuzzy = fuzzyMatches.firstOrNull()
+                ?: prefixMatches.firstOrNull { it.length == lower.length }
             bestFuzzy?.let { applyCasing(it, isCapitalized, isAllCaps) }
         } else {
             null
@@ -108,13 +173,14 @@ class SuggestionEngine(
         )
     }
 
-    fun wordScore(word: String): Int = scoreWord(word.lowercase(), exact = false)
+    fun wordScore(word: String, previousWord: String? = null): Int =
+        wordTrie.wordScore(word, previousWord).toInt()
 
-    private fun scoreWord(word: String, exact: Boolean): Int {
-        val base = baseRankMap[word] ?: 0
-        val learned = learnedFrequencies[word] ?: 0
-        return base + learned + if (exact) 400 else 0
-    }
+    fun trieWordCount(): Int = wordTrie.wordCount()
+
+    fun learnedTransitionCount(): Int = wordTrie.transitionPatternCount()
+
+    fun learnedTypoPatternCount(): Int = wordTrie.typoPatternCount()
 
     private fun applyCasing(word: String, capitalized: Boolean, allCaps: Boolean): String {
         return when {
@@ -122,32 +188,6 @@ class SuggestionEngine(
             capitalized -> word.replaceFirstChar { it.uppercase() }
             else -> word
         }
-    }
-
-    private fun keyboardEditDistance(a: String, b: String): Float {
-        val m = a.length
-        val n = b.length
-        val dp = Array(m + 1) { FloatArray(n + 1) }
-        for (i in 0..m) dp[i][0] = i.toFloat()
-        for (j in 0..n) dp[0][j] = j.toFloat()
-
-        for (i in 1..m) {
-            for (j in 1..n) {
-                val subCost = when {
-                    a[i - 1] == b[j - 1] -> 0f
-                    areAdjacentKeys(a[i - 1], b[j - 1]) -> 0.55f
-                    else -> 1.0f
-                }
-                dp[i][j] = min(
-                    min(dp[i - 1][j] + 1f, dp[i][j - 1] + 1f),
-                    dp[i - 1][j - 1] + subCost,
-                )
-                if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]) {
-                    dp[i][j] = min(dp[i][j], dp[i - 2][j - 2] + 0.65f)
-                }
-            }
-        }
-        return dp[m][n]
     }
 
     private fun areAdjacentKeys(c1: Char, c2: Char): Boolean {

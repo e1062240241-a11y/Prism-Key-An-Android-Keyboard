@@ -88,3 +88,34 @@ interface LearnedWordDao {
     @Query("DELETE FROM learned_words")
     suspend fun clearAll()
 }
+
+@Dao
+interface WordTransitionDao {
+    @Query("SELECT * FROM word_transitions ORDER BY frequency DESC, lastUsed DESC")
+    suspend fun getAllSnapshot(): List<WordTransitionEntity>
+
+    @Query("SELECT * FROM word_transitions WHERE prevWord = :prevWord AND nextWord = :nextWord LIMIT 1")
+    suspend fun find(prevWord: String, nextWord: String): WordTransitionEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entry: WordTransitionEntity)
+
+    @Query("DELETE FROM word_transitions")
+    suspend fun clearAll()
+}
+
+@Dao
+interface TypoPatternDao {
+    @Query("SELECT * FROM typo_patterns ORDER BY frequency DESC, lastUsed DESC")
+    suspend fun getAllSnapshot(): List<TypoPatternEntity>
+
+    @Query("SELECT * FROM typo_patterns WHERE typedInput = :typedInput AND targetWord = :targetWord LIMIT 1")
+    suspend fun find(typedInput: String, targetWord: String): TypoPatternEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entry: TypoPatternEntity)
+
+    @Query("DELETE FROM typo_patterns")
+    suspend fun clearAll()
+}
+
